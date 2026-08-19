@@ -335,6 +335,7 @@ let state = {
   selectedColor: COLORS[0].id,
   confirmDeleteId: null,
   loginError: '',
+  lastUsername: '',
   detailProductId: null,
   detailRatingPick: 5,
 };
@@ -486,7 +487,7 @@ function renderLogin(){
         <form id="loginForm">
           <div style="margin-bottom:14px;">
             <label class="label">Login</label>
-            <input id="loginUsername" class="input" placeholder="foydalanuvchi nomi" autocomplete="username">
+            <input id="loginUsername" class="input" placeholder="foydalanuvchi nomi" autocomplete="username" value="${esc(state.lastUsername)}">
           </div>
           <div style="margin-bottom:6px;">
             <label class="label">Parol</label>
@@ -500,31 +501,77 @@ function renderLogin(){
   </div>`;
 }
 
-function doLogin(e){
+async function sha256Hex(text){
+  try{
+    const enc = new TextEncoder().encode(text);
+    const buf = await crypto.subtle.digest('SHA-256', enc);
+    return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  }catch(e){
+    return 'plain:' + text; // very old browsers without WebCrypto — rare fallback
+  }
+}
+function saveSession(user){
+  try{ localStorage.setItem('bozor_session', JSON.stringify(user)); }catch(e){}
+}
+function clearSession(){
+  try{ localStorage.removeItem('bozor_session'); }catch(e){}
+}
+
+async function doLogin(e){
   e.preventDefault();
-  const username = document.getElementById('loginUsername').value;
+  const username = document.getElementById('loginUsername').value.trim();
   const password = document.getElementById('loginPassword').value;
-  if (!username.trim() || !password.trim()){
+  state.lastUsername = username;
+  if (!username || !password){
     state.loginError = 'Login va parolni kiriting';
     render();
     return;
   }
-  if (username.trim().toLowerCase()==='abubakir' && password==='Abubakir123'){
+
+  if (username.toLowerCase()==='abubakir' && password==='Abubakir123'){
     state.user = { name:'Abubakir', role:'admin' };
+    state.loginError = '';
+    saveSession(state.user);
     state.screen = 'admin';
-  } else {
-    state.user = { name: username.trim(), role:'customer' };
-    state.screen = 'store';
+    render();
+    return;
   }
+
+  const submitBtn = e.target.querySelector('button[type=submit]');
+  if (submitBtn){ submitBtn.disabled = true; submitBtn.textContent = 'Tekshirilmoqda...'; }
+
+  if (supabaseReady){
+    try{
+      const hash = await sha256Hex(password);
+      const { data } = await sb.from('customers').select('*').eq('username', username);
+      if (data && data.length){
+        if (data[0].password_hash !== hash){
+          state.loginError = "Parol noto'g'ri";
+          render();
+          return;
+        }
+      } else {
+        await sb.from('customers').insert({ username, password_hash: hash });
+      }
+    }catch(err){
+      showToast("Hisobni tekshirishda xatolik yuz berdi, mahalliy rejimda kirildi", 'err');
+    }
+  }
+
+  state.user = { name: username, role:'customer' };
   state.loginError = '';
+  saveSession(state.user);
+  state.screen = 'store';
   render();
 }
 
 function doLogout(){
+  clearSession();
   state.user = null;
   state.screen = 'login';
   state.cart = {};
   state.adminTab = 'products';
+  state.lastUsername = '';
   render();
 }
 
@@ -1435,12 +1482,20 @@ function bindGlobalEvents(){
 
 /* ---------------- BOOT ---------------- */
 (async function init(){
+  try{
+    const raw = localStorage.getItem('bozor_session');
+    if (raw){
+      const savedUser = JSON.parse(raw);
+      if (savedUser && savedUser.name){
+        state.user = savedUser;
+        state.screen = savedUser.role === 'admin' ? 'admin' : 'store';
+      }
+    }
+  }catch(e){ /* no saved session */ }
   render();
   await loadAll();
-  if (state.screen==='store' || state.screen==='admin'){
-    render();
-    bindGlobalEvents();
-  }
+  render();
+  bindGlobalEvents();
 })();
 </script>
 </body>
